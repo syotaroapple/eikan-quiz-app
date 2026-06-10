@@ -175,7 +175,7 @@
       <h3>試験形式モード</h3>
       <p>本番さながら時間制限あり</p>
     </div>
-    <div class="mode-card" onclick="startMode('weak')">
+    <div class="mode-card" onclick="showWeakPicker()">
       <div class="icon">🎯</div>
       <h3>苦手問題のみ</h3>
       <p>フラグ付き・間違えた問題を集中練習</p>
@@ -190,6 +190,15 @@
     <b>カテゴリを選択</b>
     <div id="cat-list" style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px;"></div>
     <button class="next-btn" style="margin-top:12px;" onclick="startMode('category')">この科目で練習開始</button>
+  </div>
+  <div id="weak-picker" style="display:none;margin-top:16px;" class="card">
+    <b>🎯 苦手問題 — カテゴリを絞る（任意）</b>
+    <p style="font-size:.82rem;color:var(--muted);margin:6px 0 10px">選択なしで全カテゴリの苦手問題を出題</p>
+    <div id="weak-cat-list" style="display:flex;flex-wrap:wrap;gap:8px;"></div>
+    <div style="display:flex;gap:8px;margin-top:12px;">
+      <button class="next-btn" style="margin-top:0;" onclick="startMode('weak')">開始</button>
+      <button class="next-btn" style="margin-top:0;background:#64748b;" onclick="clearWeakCats()">選択解除</button>
+    </div>
   </div>
 </div>
 
@@ -479,6 +488,44 @@ function renderHome(){
 function showCatPicker(){
   const p = document.getElementById('cat-picker');
   p.style.display = p.style.display === 'none' ? 'block' : 'none';
+  document.getElementById('weak-picker').style.display = 'none';
+}
+
+let selectedWeakCats = [];
+
+function showWeakPicker(){
+  const p = document.getElementById('weak-picker');
+  const isHidden = p.style.display === 'none';
+  p.style.display = isHidden ? 'block' : 'none';
+  document.getElementById('cat-picker').style.display = 'none';
+  if(!isHidden) return;
+
+  // 苦手問題が存在するカテゴリだけ表示
+  const cats = [...new Set(allQuestions.map(q=>q.cat))].sort();
+  selectedWeakCats = [];
+  const list = document.getElementById('weak-cat-list');
+  list.innerHTML = '';
+  cats.forEach(c => {
+    const weakCount = allQuestions.filter(q => q.cat===c && (flags[q.id] || wasWrong(q.id))).length;
+    const btn = document.createElement('button');
+    btn.style.cssText = 'padding:6px 12px;border-radius:20px;border:2px solid var(--border);background:#f8fafc;cursor:pointer;font-size:.82rem;';
+    btn.innerHTML = `${c} <span style="color:var(--muted);font-size:.75rem">(${weakCount})</span>`;
+    btn.dataset.cat = c;
+    if(weakCount === 0) { btn.disabled = true; btn.style.opacity = '0.4'; }
+    btn.onclick = () => {
+      const idx = selectedWeakCats.indexOf(c);
+      if(idx >= 0){ selectedWeakCats.splice(idx,1); btn.style.background='#f8fafc'; btn.style.borderColor='var(--border)'; btn.style.color=''; }
+      else { selectedWeakCats.push(c); btn.style.background='var(--danger)'; btn.style.borderColor='var(--danger)'; btn.style.color='#fff'; }
+    };
+    list.appendChild(btn);
+  });
+}
+
+function clearWeakCats(){
+  selectedWeakCats = [];
+  document.querySelectorAll('#weak-cat-list button').forEach(btn => {
+    btn.style.background='#f8fafc'; btn.style.borderColor='var(--border)'; btn.style.color='';
+  });
 }
 
 // ============================================================
@@ -493,8 +540,14 @@ function startMode(mode){
   const isMastered = q => qStats[q.id] && qStats[q.id].streak >= 3;
   let pool = allQuestions;
   if(mode === 'weak'){
-    pool = allQuestions.filter(q => flags[q.id] || wasWrong(q.id));
-    if(!pool.length){ alert('苦手問題がまだありません。練習して間違えた問題や🏴ボタンでフラグを付けた問題がここに集まります。'); return; }
+    pool = allQuestions.filter(q => (flags[q.id] || wasWrong(q.id)) &&
+      (selectedWeakCats.length === 0 || selectedWeakCats.includes(q.cat)));
+    if(!pool.length){
+      const msg = selectedWeakCats.length
+        ? `選択したカテゴリに苦手問題がありません。`
+        : `苦手問題がまだありません。練習して間違えた問題や🏴ボタンでフラグを付けた問題がここに集まります。`;
+      alert(msg); return;
+    }
   } else if(mode === 'category'){
     if(!selectedCats.length){ alert('カテゴリを選択してください。'); return; }
     pool = allQuestions.filter(q => selectedCats.includes(q.cat) && !isMastered(q));
