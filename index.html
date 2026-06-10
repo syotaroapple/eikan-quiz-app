@@ -112,7 +112,7 @@
   .cat-home-section { background:var(--card); border-radius:var(--radius); padding:20px; box-shadow:0 1px 4px rgba(0,0,0,.08); margin-top:16px; }
 
 
-  .q-status-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-top:16px; }
+  .q-status-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:10px; margin-top:16px; }
   .q-status-box { border-radius:var(--radius); padding:14px 16px; display:flex; align-items:center; gap:12px; }
   .q-status-box .qs-icon { font-size:1.6rem; }
   .q-status-box .qs-val { font-size:1.5rem; font-weight:800; line-height:1; }
@@ -120,6 +120,7 @@
   .qs-untouched { background:#f1f5f9; }
   .qs-correct   { background:#dcfce7; }
   .qs-wrong     { background:#fee2e2; }
+  .qs-streak2   { background:#ffedd5; }
   .qs-master    { background:#fef9c3; }
 
   @media(max-width:600px){
@@ -147,7 +148,7 @@
   <div class="cat-home-section">
     <b>カテゴリ別の状況</b>
     <table class="cat-home-table" id="cat-home-table">
-      <thead><tr><th>カテゴリ</th><th>問題数</th><th>正答率</th><th>⭐3連正解</th><th>❌不正解</th><th>📋未挑戦</th></tr></thead>
+      <thead><tr><th>カテゴリ</th><th>問題数</th><th>正答率</th><th>⭐3連正解</th><th>🔥2連正解</th><th>❌不正解</th><th>📋未挑戦</th></tr></thead>
       <tbody id="cat-home-body"></tbody>
     </table>
   </div>
@@ -312,6 +313,12 @@ let selectedCats = [];
 
 function loadStorage(){
   try {
+    // v2: データリセット（2連続正解カウント追加のため）
+    const DATA_VER = 'v2';
+    if(localStorage.getItem('eikan_data_ver') !== DATA_VER){
+      ['eikan_history','eikan_flags','eikan_qstats'].forEach(k=>localStorage.removeItem(k));
+      localStorage.setItem('eikan_data_ver', DATA_VER);
+    }
     const h = localStorage.getItem('eikan_history');
     if(h) history = JSON.parse(h);
     const f = localStorage.getItem('eikan_flags');
@@ -368,11 +375,12 @@ function renderHome(){
 
   // 問題別ステータス集計
   const allIds = new Set(allQuestions.map(q=>q.id));
-  let nUntouched=0, nCorrect=0, nWrong=0, nMaster=0;
+  let nUntouched=0, nCorrect=0, nWrong=0, nStreak2=0, nMaster=0;
   allIds.forEach(id=>{
     const s = qStats[id];
     if(!s || (s.c===0 && s.w===0)){ nUntouched++; }
     else if(s.streak >= 3){ nMaster++; }
+    else if(s.streak >= 2){ nStreak2++; }
     else if(s.w > 0){ nWrong++; }
     else { nCorrect++; }
   });
@@ -380,7 +388,8 @@ function renderHome(){
     <div class="q-status-box qs-untouched"><div class="qs-icon">📋</div><div><div class="qs-val">${nUntouched}</div><div class="qs-lbl">未挑戦</div></div></div>
     <div class="q-status-box qs-correct"><div class="qs-icon">⭕</div><div><div class="qs-val">${nCorrect}</div><div class="qs-lbl">正解あり</div></div></div>
     <div class="q-status-box qs-wrong"><div class="qs-icon">❌</div><div><div class="qs-val">${nWrong}</div><div class="qs-lbl">不正解あり</div></div></div>
-    <div class="q-status-box qs-master"><div class="qs-icon">⭐</div><div><div class="qs-val">${nMaster}</div><div class="qs-lbl">3回連続正解</div></div></div>
+    <div class="q-status-box qs-streak2"><div class="qs-icon">🔥</div><div><div class="qs-val">${nStreak2}</div><div class="qs-lbl">2連続正解</div></div></div>
+    <div class="q-status-box qs-master"><div class="qs-icon">⭐</div><div><div class="qs-val">${nMaster}</div><div class="qs-lbl">3連正解(除外)</div></div></div>
   `;
 
   // カテゴリ別統計
@@ -416,11 +425,12 @@ function renderHome(){
     const flagStr = f > 0 ? `<span style="color:var(--danger);font-weight:600">${f}</span>` : `<span style="color:var(--muted)">0</span>`;
     // カテゴリ別問題ステータス
     const catQs = allQuestions.filter(q=>q.cat===c);
-    let cm=0, cw=0, cu=0;
+    let cm=0, cs2=0, cw=0, cu=0;
     catQs.forEach(q=>{
       const s=qStats[q.id];
       if(!s||(s.c===0&&s.w===0)) cu++;
       else if(s.streak>=3) cm++;
+      else if(s.streak>=2) cs2++;
       else if(s.w>0) cw++;
     });
     return `<tr>
@@ -428,6 +438,7 @@ function renderHome(){
       <td style="font-weight:600">${n}</td>
       <td style="display:flex;align-items:center;gap:4px">${pStr}</td>
       <td style="color:#ca8a04;font-weight:600">${cm}</td>
+      <td style="color:#f97316;font-weight:600">${cs2}</td>
       <td style="color:var(--danger);font-weight:600">${cw}</td>
       <td style="color:var(--muted)">${cu}</td>
     </tr>`;
@@ -465,13 +476,18 @@ function startMode(mode){
   settings.order = document.getElementById('set-order')?.value || settings.order;
   saveStorage();
 
+  const isMastered = q => qStats[q.id] && qStats[q.id].streak >= 3;
   let pool = allQuestions;
   if(mode === 'weak'){
     pool = allQuestions.filter(q => flags[q.id] || wasWrong(q.id));
     if(!pool.length){ alert('苦手問題がまだありません。練習して間違えた問題や🏴ボタンでフラグを付けた問題がここに集まります。'); return; }
   } else if(mode === 'category'){
     if(!selectedCats.length){ alert('カテゴリを選択してください。'); return; }
-    pool = allQuestions.filter(q => selectedCats.includes(q.cat));
+    pool = allQuestions.filter(q => selectedCats.includes(q.cat) && !isMastered(q));
+    if(!pool.length){ alert('選択したカテゴリの問題は全て3連続正解済みです！🎉'); return; }
+  } else if(mode === 'practice'){
+    pool = allQuestions.filter(q => !isMastered(q));
+    if(!pool.length){ alert('全問題3連続正解達成！完全マスターです！🎉🎉🎉'); return; }
   }
   if(!pool.length){ alert('問題がありません。'); return; }
 
