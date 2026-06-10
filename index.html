@@ -639,12 +639,16 @@ function selectAnswer(idx){
   if(isCorrect){
     qStats[q.id].c++;
     qStats[q.id].streak++;
+    // 苦手モードで正解したらフラグを解除
+    if(session.mode === 'weak') delete flags[q.id];
   } else {
     qStats[q.id].w++;
     qStats[q.id].streak = 0;
     flags[q.id] = true;
   }
   saveStorage();
+  // フラグボタンの表示を更新
+  document.getElementById('flag-btn').textContent = flags[q.id] ? '🏴' : '🏳️';
 
   const btns = document.querySelectorAll('.option-btn');
   btns.forEach((b, i) => {
