@@ -103,24 +103,22 @@
   .weak-empty { text-align: center; color: var(--muted); padding: 48px; }
 
 
-  .cat-home-table { width:100%; border-collapse:collapse; font-size:.85rem; margin-top:8px; table-layout:fixed; }
-  .cat-home-table th { text-align:left; padding:6px 4px; border-bottom:2px solid var(--border); color:var(--muted); font-weight:600; white-space:nowrap; }
-  .cat-home-table th:nth-child(1) { width:36%; }
-  .cat-home-table th:nth-child(2) { width:10%; text-align:center; }
-  .cat-home-table th:nth-child(3) { width:20%; }
+  .cat-table-scroll { overflow-x:auto; -webkit-overflow-scrolling:touch; margin-top:8px; }
+  .cat-home-table { border-collapse:collapse; font-size:.83rem; table-layout:fixed; min-width:480px; width:100%; }
+  .cat-home-table th { text-align:center; padding:6px 6px; border-bottom:2px solid var(--border); color:var(--muted); font-weight:600; white-space:nowrap; }
+  .cat-home-table th:nth-child(1) { text-align:left; width:120px; }
+  .cat-home-table th:nth-child(2) { width:52px; }
+  .cat-home-table th:nth-child(3) { width:120px; text-align:left; }
   .cat-home-table th:nth-child(4),
   .cat-home-table th:nth-child(5),
   .cat-home-table th:nth-child(6),
-  .cat-home-table th:nth-child(7) { width:8.5%; text-align:center; }
-  .cat-home-table td { padding:7px 4px; border-bottom:1px solid var(--border); vertical-align:middle; overflow:hidden; }
-  .cat-home-table td:nth-child(2),
-  .cat-home-table td:nth-child(4),
-  .cat-home-table td:nth-child(5),
-  .cat-home-table td:nth-child(6),
-  .cat-home-table td:nth-child(7) { text-align:center; }
+  .cat-home-table th:nth-child(7) { width:46px; }
+  .cat-home-table td { padding:7px 6px; border-bottom:1px solid var(--border); vertical-align:middle; text-align:center; white-space:nowrap; }
+  .cat-home-table td:nth-child(1) { text-align:left; white-space:normal; word-break:keep-all; font-size:.8rem; }
+  .cat-home-table td:nth-child(3) { text-align:left; }
   .cat-home-table tr:last-child td { border-bottom:none; }
   .pct-cell { display:flex; align-items:center; gap:4px; }
-  .mini-bar-wrap { background:var(--border); border-radius:99px; height:7px; flex:1; min-width:0; }
+  .mini-bar-wrap { background:var(--border); border-radius:99px; height:7px; flex:1; min-width:40px; }
   .mini-bar { background:var(--primary); height:7px; border-radius:99px; }
   .cat-home-section { background:var(--card); border-radius:var(--radius); padding:20px; box-shadow:0 1px 4px rgba(0,0,0,.08); margin-top:16px; }
 
@@ -160,10 +158,12 @@
   <div class="q-status-grid" id="q-status-grid"></div>
   <div class="cat-home-section">
     <b>カテゴリ別の状況</b>
+    <div class="cat-table-scroll">
     <table class="cat-home-table" id="cat-home-table">
-      <thead><tr><th>カテゴリ</th><th>問題数</th><th>正答率</th><th>⭐3連正解</th><th>🔥2連正解</th><th>❌不正解</th><th>📋未挑戦</th></tr></thead>
+      <thead><tr><th>カテゴリ</th><th>問題数</th><th>正答率</th><th>⭐<br>3連</th><th>🔥<br>2連</th><th>❌<br>不正</th><th>📋<br>未挑</th></tr></thead>
       <tbody id="cat-home-body"></tbody>
     </table>
+    </div>
   </div>
   <div class="home-grid">
     <div class="mode-card" onclick="startMode('practice')">
