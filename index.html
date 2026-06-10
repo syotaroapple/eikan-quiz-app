@@ -506,7 +506,7 @@ function showWeakPicker(){
   const list = document.getElementById('weak-cat-list');
   list.innerHTML = '';
   cats.forEach(c => {
-    const weakCount = allQuestions.filter(q => q.cat===c && (flags[q.id] || wasWrong(q.id))).length;
+    const weakCount = allQuestions.filter(q => q.cat===c && (flags[q.id] || wasWrong(q.id)) && !(qStats[q.id] && qStats[q.id].weakCleared)).length;
     const btn = document.createElement('button');
     btn.style.cssText = 'padding:6px 12px;border-radius:20px;border:2px solid var(--border);background:#f8fafc;cursor:pointer;font-size:.82rem;';
     btn.innerHTML = `${c} <span style="color:var(--muted);font-size:.75rem">(${weakCount})</span>`;
@@ -540,7 +540,9 @@ function startMode(mode){
   const isMastered = q => qStats[q.id] && qStats[q.id].streak >= 3;
   let pool = allQuestions;
   if(mode === 'weak'){
-    pool = allQuestions.filter(q => (flags[q.id] || wasWrong(q.id)) &&
+    pool = allQuestions.filter(q =>
+      (flags[q.id] || wasWrong(q.id)) &&
+      !(qStats[q.id] && qStats[q.id].weakCleared) &&
       (selectedWeakCats.length === 0 || selectedWeakCats.includes(q.cat)));
     if(!pool.length){
       const msg = selectedWeakCats.length
@@ -639,12 +641,17 @@ function selectAnswer(idx){
   if(isCorrect){
     qStats[q.id].c++;
     qStats[q.id].streak++;
-    // 苦手モードで正解したらフラグを解除
-    if(session.mode === 'weak') delete flags[q.id];
+    // 苦手モードで正解したらフラグ解除＋誤答履歴も無効化
+    if(session.mode === 'weak'){
+      delete flags[q.id];
+      qStats[q.id].weakCleared = true;
+    }
   } else {
     qStats[q.id].w++;
     qStats[q.id].streak = 0;
     flags[q.id] = true;
+    // 再度誤答したらweakClearedを取り消す
+    delete qStats[q.id].weakCleared;
   }
   saveStorage();
   // フラグボタンの表示を更新
