@@ -103,11 +103,24 @@
   .weak-empty { text-align: center; color: var(--muted); padding: 48px; }
 
 
-  .cat-home-table { width:100%; border-collapse:collapse; font-size:.85rem; margin-top:8px; }
-  .cat-home-table th { text-align:left; padding:6px 8px; border-bottom:2px solid var(--border); color:var(--muted); font-weight:600; }
-  .cat-home-table td { padding:7px 8px; border-bottom:1px solid var(--border); vertical-align:middle; }
+  .cat-home-table { width:100%; border-collapse:collapse; font-size:.85rem; margin-top:8px; table-layout:fixed; }
+  .cat-home-table th { text-align:left; padding:6px 4px; border-bottom:2px solid var(--border); color:var(--muted); font-weight:600; white-space:nowrap; }
+  .cat-home-table th:nth-child(1) { width:36%; }
+  .cat-home-table th:nth-child(2) { width:10%; text-align:center; }
+  .cat-home-table th:nth-child(3) { width:20%; }
+  .cat-home-table th:nth-child(4),
+  .cat-home-table th:nth-child(5),
+  .cat-home-table th:nth-child(6),
+  .cat-home-table th:nth-child(7) { width:8.5%; text-align:center; }
+  .cat-home-table td { padding:7px 4px; border-bottom:1px solid var(--border); vertical-align:middle; overflow:hidden; }
+  .cat-home-table td:nth-child(2),
+  .cat-home-table td:nth-child(4),
+  .cat-home-table td:nth-child(5),
+  .cat-home-table td:nth-child(6),
+  .cat-home-table td:nth-child(7) { text-align:center; }
   .cat-home-table tr:last-child td { border-bottom:none; }
-  .mini-bar-wrap { background:var(--border); border-radius:99px; height:7px; min-width:80px; }
+  .pct-cell { display:flex; align-items:center; gap:4px; }
+  .mini-bar-wrap { background:var(--border); border-radius:99px; height:7px; flex:1; min-width:0; }
   .mini-bar { background:var(--primary); height:7px; border-radius:99px; }
   .cat-home-section { background:var(--card); border-radius:var(--radius); padding:20px; box-shadow:0 1px 4px rgba(0,0,0,.08); margin-top:16px; }
 
@@ -421,7 +434,7 @@ function renderHome(){
     const p = a.total ? Math.round(a.correct/a.total*100) : null;
     const f = catFlags[c]||0;
     const barW = p !== null ? p : 0;
-    const pStr = p !== null ? `<div class="mini-bar-wrap"><div class="mini-bar" style="width:${barW}%"></div></div><span style="font-size:.8rem;margin-left:6px;color:var(--muted)">${p}%</span>` : '<span style="font-size:.8rem;color:var(--muted)">未挑戦</span>';
+    const pStr = p !== null ? `<div class="pct-cell"><div class="mini-bar-wrap"><div class="mini-bar" style="width:${barW}%"></div></div><span style="font-size:.78rem;color:var(--muted);white-space:nowrap">${p}%</span></div>` : '<span style="font-size:.78rem;color:var(--muted)">未挑戦</span>';
     const flagStr = f > 0 ? `<span style="color:var(--danger);font-weight:600">${f}</span>` : `<span style="color:var(--muted)">0</span>`;
     // カテゴリ別問題ステータス
     const catQs = allQuestions.filter(q=>q.cat===c);
@@ -436,7 +449,7 @@ function renderHome(){
     return `<tr>
       <td>${c}</td>
       <td style="font-weight:600">${n}</td>
-      <td style="display:flex;align-items:center;gap:4px">${pStr}</td>
+      <td>${pStr}</td>
       <td style="color:#ca8a04;font-weight:600">${cm}</td>
       <td style="color:#f97316;font-weight:600">${cs2}</td>
       <td style="color:var(--danger);font-weight:600">${cw}</td>
