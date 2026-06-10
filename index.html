@@ -111,6 +111,17 @@
   .mini-bar { background:var(--primary); height:7px; border-radius:99px; }
   .cat-home-section { background:var(--card); border-radius:var(--radius); padding:20px; box-shadow:0 1px 4px rgba(0,0,0,.08); margin-top:16px; }
 
+
+  .q-status-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-top:16px; }
+  .q-status-box { border-radius:var(--radius); padding:14px 16px; display:flex; align-items:center; gap:12px; }
+  .q-status-box .qs-icon { font-size:1.6rem; }
+  .q-status-box .qs-val { font-size:1.5rem; font-weight:800; line-height:1; }
+  .q-status-box .qs-lbl { font-size:.75rem; color:#555; margin-top:2px; }
+  .qs-untouched { background:#f1f5f9; }
+  .qs-correct   { background:#dcfce7; }
+  .qs-wrong     { background:#fee2e2; }
+  .qs-master    { background:#fef9c3; }
+
   @media(max-width:600px){
     .stats-row { grid-template-columns: repeat(2,1fr); }
     .home-grid { grid-template-columns: 1fr 1fr; }
@@ -132,10 +143,11 @@
 <!-- HOME -->
 <div class="screen active" id="screen-home">
   <div class="stats-row" id="home-stats"></div>
+  <div class="q-status-grid" id="q-status-grid"></div>
   <div class="cat-home-section">
     <b>カテゴリ別の状況</b>
     <table class="cat-home-table" id="cat-home-table">
-      <thead><tr><th>カテゴリ</th><th>問題数</th><th>正答率</th><th>🏴フラグ</th></tr></thead>
+      <thead><tr><th>カテゴリ</th><th>問題数</th><th>正答率</th><th>⭐3連正解</th><th>❌不正解</th><th>📋未挑戦</th></tr></thead>
       <tbody id="cat-home-body"></tbody>
     </table>
   </div>
@@ -293,6 +305,7 @@ let session = {
   limitSec: 0,
 };
 let history = [];   // [{date, correct, total, cat:{}}, ...]
+let qStats = {};    // {id: {c:正解数, w:不正解数, streak:連続正解数}}
 let flags = {};     // {id: true}
 let settings = { count: 10, time: 180, order: 'random' };
 let selectedCats = [];
@@ -305,6 +318,8 @@ function loadStorage(){
     if(f) flags = JSON.parse(f);
     const s = localStorage.getItem('eikan_settings');
     if(s) Object.assign(settings, JSON.parse(s));
+    const qs = localStorage.getItem('eikan_qstats');
+    if(qs) qStats = JSON.parse(qs);
     const cq = localStorage.getItem('eikan_custom_q');
     if(cq){
       const arr = JSON.parse(cq);
@@ -317,6 +332,7 @@ function saveStorage(){
   localStorage.setItem('eikan_history', JSON.stringify(history));
   localStorage.setItem('eikan_flags', JSON.stringify(flags));
   localStorage.setItem('eikan_settings', JSON.stringify(settings));
+  localStorage.setItem('eikan_qstats', JSON.stringify(qStats));
 }
 
 // ============================================================
@@ -350,6 +366,23 @@ function renderHome(){
     <div class="stat-box"><div class="val">${flagCount}</div><div class="lbl">苦手フラグ数</div></div>
   `;
 
+  // 問題別ステータス集計
+  const allIds = new Set(allQuestions.map(q=>q.id));
+  let nUntouched=0, nCorrect=0, nWrong=0, nMaster=0;
+  allIds.forEach(id=>{
+    const s = qStats[id];
+    if(!s || (s.c===0 && s.w===0)){ nUntouched++; }
+    else if(s.streak >= 3){ nMaster++; }
+    else if(s.w > 0){ nWrong++; }
+    else { nCorrect++; }
+  });
+  document.getElementById('q-status-grid').innerHTML = `
+    <div class="q-status-box qs-untouched"><div class="qs-icon">📋</div><div><div class="qs-val">${nUntouched}</div><div class="qs-lbl">未挑戦</div></div></div>
+    <div class="q-status-box qs-correct"><div class="qs-icon">⭕</div><div><div class="qs-val">${nCorrect}</div><div class="qs-lbl">正解あり</div></div></div>
+    <div class="q-status-box qs-wrong"><div class="qs-icon">❌</div><div><div class="qs-val">${nWrong}</div><div class="qs-lbl">不正解あり</div></div></div>
+    <div class="q-status-box qs-master"><div class="qs-icon">⭐</div><div><div class="qs-val">${nMaster}</div><div class="qs-lbl">3回連続正解</div></div></div>
+  `;
+
   // カテゴリ別統計
   const cats = [...new Set(allQuestions.map(q=>q.cat))].sort();
   // カテゴリ別問題数
@@ -381,7 +414,23 @@ function renderHome(){
     const barW = p !== null ? p : 0;
     const pStr = p !== null ? `<div class="mini-bar-wrap"><div class="mini-bar" style="width:${barW}%"></div></div><span style="font-size:.8rem;margin-left:6px;color:var(--muted)">${p}%</span>` : '<span style="font-size:.8rem;color:var(--muted)">未挑戦</span>';
     const flagStr = f > 0 ? `<span style="color:var(--danger);font-weight:600">${f}</span>` : `<span style="color:var(--muted)">0</span>`;
-    return `<tr><td>${c}</td><td style="font-weight:600">${n}</td><td style="display:flex;align-items:center;gap:4px">${pStr}</td><td>${flagStr}</td></tr>`;
+    // カテゴリ別問題ステータス
+    const catQs = allQuestions.filter(q=>q.cat===c);
+    let cm=0, cw=0, cu=0;
+    catQs.forEach(q=>{
+      const s=qStats[q.id];
+      if(!s||(s.c===0&&s.w===0)) cu++;
+      else if(s.streak>=3) cm++;
+      else if(s.w>0) cw++;
+    });
+    return `<tr>
+      <td>${c}</td>
+      <td style="font-weight:600">${n}</td>
+      <td style="display:flex;align-items:center;gap:4px">${pStr}</td>
+      <td style="color:#ca8a04;font-weight:600">${cm}</td>
+      <td style="color:var(--danger);font-weight:600">${cw}</td>
+      <td style="color:var(--muted)">${cu}</td>
+    </tr>`;
   }).join('');
 
   // カテゴリ一覧
@@ -488,6 +537,17 @@ function selectAnswer(idx){
   const correct = q.ans;
   const isCorrect = idx === correct;
   session.answered.push({ id: q.id, correct: isCorrect, chosen: idx });
+  // 問題ごとの統計を更新
+  if(!qStats[q.id]) qStats[q.id] = {c:0, w:0, streak:0};
+  if(isCorrect){
+    qStats[q.id].c++;
+    qStats[q.id].streak++;
+  } else {
+    qStats[q.id].w++;
+    qStats[q.id].streak = 0;
+    flags[q.id] = true;
+  }
+  saveStorage();
 
   const btns = document.querySelectorAll('.option-btn');
   btns.forEach((b, i) => {
@@ -756,7 +816,7 @@ function importJSON(){
 
 function resetHistory(){
   if(!confirm('学習履歴をリセットしますか？')) return;
-  history = [];
+  history = []; qStats = {};
   saveStorage();
   alert('履歴をリセットしました。');
 }
