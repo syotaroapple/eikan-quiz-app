@@ -385,7 +385,6 @@ function renderHome(){
   }).join('');
 
   // カテゴリ一覧
-  const cats = [...new Set(allQuestions.map(q=>q.cat))];
   const catList = document.getElementById('cat-list');
   selectedCats = [];
   catList.innerHTML = '';
