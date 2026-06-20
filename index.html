@@ -331,6 +331,8 @@ let qStats = {};    // {id: {c:正解数, w:不正解数, streak:連続正解数
 let flags = {};     // {id: true}
 let settings = { count: 10, time: 180, order: 'random' };
 let selectedCats = [];
+let answerLog = []; // [{cat, correct}, ...] 解答順。直近100問の正答率算出用
+const ANSWER_LOG_MAX = 3000; // 肥大化防止の上限
 
 function loadStorage(){
   try {
@@ -348,6 +350,8 @@ function loadStorage(){
     if(s) Object.assign(settings, JSON.parse(s));
     const qs = localStorage.getItem('eikan_qstats');
     if(qs) qStats = JSON.parse(qs);
+    const al = localStorage.getItem('eikan_answerlog');
+    if(al) answerLog = JSON.parse(al);
     const cq = localStorage.getItem('eikan_custom_q');
     if(cq){
       const arr = JSON.parse(cq);
@@ -361,6 +365,7 @@ function saveStorage(){
   localStorage.setItem('eikan_flags', JSON.stringify(flags));
   localStorage.setItem('eikan_settings', JSON.stringify(settings));
   localStorage.setItem('eikan_qstats', JSON.stringify(qStats));
+  localStorage.setItem('eikan_answerlog', JSON.stringify(answerLog));
 }
 
 // ============================================================
@@ -383,13 +388,15 @@ function showScreen(name){
 // ============================================================
 function renderHome(){
   const total = history.reduce((s,h)=>s+h.total,0);
-  const correct = history.reduce((s,h)=>s+h.correct,0);
-  const pct = total ? Math.round(correct/total*100) : 0;
   const flagCount = Object.values(flags).filter(Boolean).length;
   const sessions = history.length;
+  // 直近100問の正答率
+  const recent = answerLog.slice(-100);
+  const recentPct = recent.length ? Math.round(recent.filter(a=>a.correct).length/recent.length*100) : 0;
+  const recentLbl = `直近正答率${recent.length<100?`(${recent.length})`:''}`;
   document.getElementById('home-stats').innerHTML = `
     <div class="stat-box"><div class="val">${total}</div><div class="lbl">総回答数</div></div>
-    <div class="stat-box"><div class="val">${pct}%</div><div class="lbl">総合正答率</div></div>
+    <div class="stat-box"><div class="val">${recentPct}%</div><div class="lbl">${recentLbl}</div></div>
     <div class="stat-box"><div class="val">${sessions}</div><div class="lbl">セッション数</div></div>
     <div class="stat-box"><div class="val">${flagCount}</div><div class="lbl">苦手フラグ数</div></div>
   `;
@@ -418,14 +425,11 @@ function renderHome(){
   // カテゴリ別問題数
   const catTotal = {};
   allQuestions.forEach(q=>{ catTotal[q.cat]=(catTotal[q.cat]||0)+1; });
-  // カテゴリ別正解数・回答数（履歴から集計）
+  // カテゴリ別 直近100問の正答率（解答ログから集計）
   const catAns = {};
-  history.forEach(h=>{
-    if(!h.cat) return;
-    Object.entries(h.cat).forEach(([c,v])=>{
-      if(!catAns[c]) catAns[c]={correct:0,total:0};
-      catAns[c].correct+=v.correct; catAns[c].total+=v.total;
-    });
+  cats.forEach(c=>{
+    const recent = answerLog.filter(a=>a.cat===c).slice(-100);
+    catAns[c] = { correct: recent.filter(a=>a.correct).length, total: recent.length };
   });
   // カテゴリ別フラグ数
   const catFlags = {};
@@ -636,6 +640,9 @@ function selectAnswer(idx){
   const correct = q.ans;
   const isCorrect = idx === correct;
   session.answered.push({ id: q.id, correct: isCorrect, chosen: idx });
+  // 解答ログに記録（直近100問の正答率算出用）
+  answerLog.push({ cat: q.cat, correct: isCorrect });
+  if(answerLog.length > ANSWER_LOG_MAX) answerLog = answerLog.slice(-ANSWER_LOG_MAX);
   // 問題ごとの統計を更新
   if(!qStats[q.id]) qStats[q.id] = {c:0, w:0, streak:0};
   if(isCorrect){
@@ -832,15 +839,11 @@ function renderStats(){
     });
   }
 
-  // カテゴリ別
+  // カテゴリ別 直近100問の正答率
   const catTotals = {};
-  history.forEach(h => {
-    if(!h.cat) return;
-    Object.entries(h.cat).forEach(([c,v]) => {
-      if(!catTotals[c]) catTotals[c]={correct:0,total:0};
-      catTotals[c].correct += v.correct;
-      catTotals[c].total += v.total;
-    });
+  [...new Set(answerLog.map(a=>a.cat))].forEach(c=>{
+    const r = answerLog.filter(a=>a.cat===c).slice(-100);
+    catTotals[c] = { correct: r.filter(a=>a.correct).length, total: r.length };
   });
   const catEl = document.getElementById('cat-stats');
   catEl.innerHTML = '';
