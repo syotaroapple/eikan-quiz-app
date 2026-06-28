@@ -153,6 +153,7 @@
 
 <!-- HOME -->
 <div class="screen active" id="screen-home">
+  <div id="countdown-card" style="display:none;"></div>
   <div class="stats-row" id="home-stats"></div>
   <div class="q-status-grid" id="q-status-grid"></div>
   <div class="cat-home-section">
@@ -281,6 +282,19 @@
     </div>
   </div>
   <div class="card">
+    <b>🎯 試験日（受験カウントダウン）</b>
+    <p style="font-size:.85rem;color:var(--muted);margin:6px 0 10px;">受験日を設定すると、ホームに残り日数と「受験準備度」のペース判定が表示されます。ゴールは全カテゴリの直近正答率80%です。</p>
+    <div class="setting-row">
+      <span>受験予定日</span>
+      <input type="date" id="set-examdate">
+    </div>
+    <div style="display:flex;gap:10px;margin-top:10px;">
+      <button class="next-btn" style="width:auto;padding:10px 20px;margin-top:0;" onclick="saveExamDate()">設定</button>
+      <button class="next-btn" style="width:auto;padding:10px 20px;margin-top:0;background:#64748b;" onclick="clearExamDate()">クリア</button>
+    </div>
+    <div id="examdate-msg" style="margin-top:8px;font-size:.88rem;"></div>
+  </div>
+  <div class="card">
     <b>問題データのインポート（JSON）</b>
     <p style="font-size:.85rem;color:var(--muted);margin-top:6px;">以下のフォーマットのJSONファイルを読み込むと問題を追加できます。</p>
     <textarea readonly id="format-example"></textarea>
@@ -386,7 +400,85 @@ function showScreen(name){
 // ============================================================
 // Home
 // ============================================================
+// カテゴリ別「準備度」(0..1)を返す。直近100問の正答率80%＝満点、回答数100問で量も満点
+function catReadiness(c){
+  const recent = answerLog.filter(a=>a.cat===c).slice(-100);
+  if(!recent.length) return 0;
+  const vol = Math.min(recent.length/100, 1);          // 量（直近100問で満点）
+  const acc = recent.filter(a=>a.correct).length/recent.length;
+  const accScore = Math.min(acc/0.8, 1);               // 80%で満点
+  return vol * accScore;
+}
+// 全体の受験準備度(0..100%)。5カテゴリの平均
+function overallReadiness(){
+  const cats = [...new Set(allQuestions.map(q=>q.cat))];
+  const sum = cats.reduce((s,c)=>s+catReadiness(c), 0);
+  return Math.round(sum/cats.length*100);
+}
+
+function renderCountdown(){
+  const el = document.getElementById('countdown-card');
+  if(!settings.examDate){ el.style.display='none'; return; }
+  el.style.display='block';
+
+  const today = new Date(); today.setHours(0,0,0,0);
+  const exam = new Date(settings.examDate+'T00:00:00');
+  const daysToExam = Math.round((exam - today)/86400000);
+  const BUFFER = 3; // 試験3日前を仕上げ完了の締切に
+  const deadline = new Date(exam); deadline.setDate(deadline.getDate()-BUFFER);
+  const daysToDeadline = Math.max(0, Math.round((deadline - today)/86400000));
+
+  const readiness = overallReadiness();
+  // 逆算ペース: 設定時点の準備度から100%まで線形。今日あるべきライン
+  if(!settings.examStart || settings.examStart.examDate !== settings.examDate){
+    settings.examStart = { date: today.toISOString().slice(0,10), readiness, examDate: settings.examDate };
+    saveStorage();
+  }
+  const start = settings.examStart;
+  const startDate = new Date(start.date+'T00:00:00');
+  const totalDays = Math.max(1, Math.round((deadline - startDate)/86400000));
+  const elapsed = Math.min(totalDays, Math.max(0, Math.round((today - startDate)/86400000)));
+  const targetToday = Math.round(start.readiness + (100 - start.readiness)*(elapsed/totalDays));
+  const behind = targetToday - readiness;
+
+  let status, color, icon;
+  if(daysToExam < 0){ status='試験日が過ぎています'; color='#64748b'; icon='🏁'; }
+  else if(readiness >= 100){ status='準備完了！自信を持って受験を'; color='#16a34a'; icon='✅'; }
+  else if(behind <= 3){ status='順調なペースです'; color='#16a34a'; icon='👍'; }
+  else if(behind <= 12){ status=`少し遅れ気味（目標まで${behind}%）`; color='#ca8a04'; icon='⚠️'; }
+  else { status=`遅れています（目標まで${behind}%）`; color='#dc2626'; icon='🔥'; }
+
+  // 残り日数で100%にするのに必要な1日あたりの上昇
+  const needPerDay = daysToDeadline>0 ? ((100-readiness)/daysToDeadline).toFixed(1) : '0';
+
+  const examStr = `${exam.getMonth()+1}/${exam.getDate()}`;
+  const dlabel = daysToExam>=0 ? `あと${daysToExam}日` : `${-daysToExam}日経過`;
+
+  el.innerHTML = `
+  <div class="card" style="border-left:5px solid ${color};">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;">
+      <b style="font-size:1.05rem;">🎯 試験まで ${dlabel}</b>
+      <span style="font-size:.85rem;color:var(--muted);">${examStr}受験</span>
+    </div>
+    <div style="margin-top:10px;font-size:.9rem;color:${color};font-weight:600;">${icon} ${status}</div>
+    <div style="margin-top:12px;">
+      <div style="display:flex;justify-content:space-between;font-size:.82rem;color:var(--muted);margin-bottom:4px;">
+        <span>受験準備度</span><span><b style="color:var(--text);font-size:1rem;">${readiness}%</b> / 目標 ${targetToday}%</span>
+      </div>
+      <div style="position:relative;background:var(--border);border-radius:99px;height:12px;overflow:hidden;">
+        <div style="position:absolute;left:0;top:0;height:100%;width:${readiness}%;background:${color};border-radius:99px;"></div>
+        <div style="position:absolute;left:${targetToday}%;top:-2px;height:16px;width:2px;background:#1e293b;" title="今日の目標ライン"></div>
+      </div>
+    </div>
+    <div style="margin-top:10px;font-size:.8rem;color:var(--muted);">
+      締切（試験${BUFFER}日前）まであと${daysToDeadline}日。100%にするには1日 +${needPerDay}%ペース。<br>
+      ゴール＝全カテゴリの直近正答率80%。下の表で弱い科目を優先。
+    </div>
+  </div>`;
+}
+
 function renderHome(){
+  renderCountdown();
   const total = history.reduce((s,h)=>s+h.total,0);
   const flagCount = Object.values(flags).filter(Boolean).length;
   const sessions = history.length;
@@ -888,10 +980,31 @@ function removeFlag(id){
 // ============================================================
 // Settings
 // ============================================================
+function saveExamDate(){
+  const v = document.getElementById('set-examdate').value;
+  const msg = document.getElementById('examdate-msg');
+  if(!v){ msg.textContent='日付を選択してください。'; msg.style.color='var(--danger)'; return; }
+  settings.examDate = v;
+  delete settings.examStart; // 再アンカー（次回renderCountdownで現在準備度を起点に）
+  saveStorage();
+  const d = new Date(v+'T00:00:00');
+  msg.textContent = `${d.getMonth()+1}/${d.getDate()} を受験日に設定しました。ホームでペースを確認できます。`;
+  msg.style.color='var(--success)';
+}
+function clearExamDate(){
+  delete settings.examDate;
+  delete settings.examStart;
+  document.getElementById('set-examdate').value='';
+  saveStorage();
+  const msg = document.getElementById('examdate-msg');
+  msg.textContent='試験日をクリアしました。'; msg.style.color='var(--muted)';
+}
+
 function renderSettings(){
   document.getElementById('set-count').value = settings.count;
   document.getElementById('set-time').value = settings.time;
   document.getElementById('set-order').value = settings.order;
+  document.getElementById('set-examdate').value = settings.examDate || '';
   document.getElementById('format-example').value = JSON.stringify([{
     "id": "custom001",
     "cat": "関係法令",
