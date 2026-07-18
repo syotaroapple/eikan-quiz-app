@@ -187,6 +187,17 @@
       <h3>カテゴリ選択</h3>
       <p>科目を絞って練習する</p>
     </div>
+    <div class="mode-card" onclick="showDungeonPicker()" style="grid-column:1/-1;border:2px solid var(--primary);">
+      <div class="icon">🏰</div>
+      <h3>ダンジョンモード</h3>
+      <p>10問ずつボスに挑む連戦。深く潜るほど高報酬・撤退で持ち帰り</p>
+    </div>
+  </div>
+  <div id="dungeon-picker" style="display:none;margin-top:16px;" class="card">
+    <b>🏰 ダンジョン — 挑む科目を選択</b>
+    <p style="font-size:.82rem;color:var(--muted);margin:6px 0 10px">選択なしで全科目からランダム出題。10問ごとにボス戦、突破すると次の階へ。</p>
+    <div id="dungeon-cat-list" style="display:flex;flex-wrap:wrap;gap:8px;"></div>
+    <button class="next-btn" style="margin-top:12px;" onclick="startDungeon()">⚔️ ダンジョンに挑む</button>
   </div>
   <div id="cat-picker" style="display:none;margin-top:16px;" class="card">
     <b>カテゴリを選択</b>
@@ -241,6 +252,11 @@
     <b>問題別レビュー</b>
     <div class="review-list" id="review-list"></div>
   </div>
+</div>
+
+<!-- DUNGEON INTERLUDE -->
+<div class="screen" id="screen-dungeon">
+  <div class="card" id="dungeon-body" style="text-align:center;padding:20px;"></div>
 </div>
 
 <!-- STATS -->
@@ -950,6 +966,159 @@ function clearWeakCats(){
 }
 
 // ============================================================
+// ダンジョンモード（ローグライク連戦）
+// ============================================================
+let selectedDungeonCats = [];
+
+function showDungeonPicker(){
+  const p = document.getElementById('dungeon-picker');
+  const isHidden = p.style.display === 'none';
+  p.style.display = isHidden ? 'block' : 'none';
+  document.getElementById('cat-picker').style.display = 'none';
+  document.getElementById('weak-picker').style.display = 'none';
+  if(!isHidden) return;
+  const cats = [...new Set(allQuestions.map(q=>q.cat))].sort();
+  selectedDungeonCats = [];
+  const list = document.getElementById('dungeon-cat-list');
+  list.innerHTML = '';
+  cats.forEach(c => {
+    const avail = allQuestions.filter(q => q.cat===c && !(qStats[q.id] && qStats[q.id].streak>=3)).length;
+    const btn = document.createElement('button');
+    btn.style.cssText = 'padding:6px 12px;border-radius:20px;border:2px solid var(--border);background:#f8fafc;cursor:pointer;font-size:.82rem;';
+    btn.innerHTML = `${c} <span style="color:var(--muted);font-size:.75rem">(${avail})</span>`;
+    if(avail===0){ btn.disabled=true; btn.style.opacity='0.4'; }
+    btn.onclick = () => {
+      const idx = selectedDungeonCats.indexOf(c);
+      if(idx>=0){ selectedDungeonCats.splice(idx,1); btn.style.background='#f8fafc'; btn.style.borderColor='var(--border)'; btn.style.color=''; }
+      else { selectedDungeonCats.push(c); btn.style.background='var(--primary)'; btn.style.borderColor='var(--primary)'; btn.style.color='#fff'; }
+    };
+    list.appendChild(btn);
+  });
+}
+
+function startDungeon(){
+  settings.count = parseInt(document.getElementById('set-count')?.value || settings.count) || 10;
+  session.dungeon = { cats: [...selectedDungeonCats], floor: 1, runExp: 0 };
+  if(buildDungeonFloor()) { showScreen('quiz'); renderQuestion(); }
+}
+
+// 現在の階の10問を用意。問題がなければfalse
+function buildDungeonFloor(){
+  const d = session.dungeon;
+  let pool = allQuestions.filter(q => !(qStats[q.id] && qStats[q.id].streak>=3));
+  if(d.cats.length) pool = pool.filter(q => d.cats.includes(q.cat));
+  if(!pool.length){
+    if(d.floor>1){ dungeonClearAll(); return false; }
+    alert('挑める問題がありません（全て3連正解済み）。'); showScreen('home'); return false;
+  }
+  const qs = shuffle(pool).slice(0, Math.min(settings.count, pool.length));
+  session.questions = qs;
+  session.current = 0;
+  session.answered = [];
+  session.mode = 'dungeon';
+  if(session.timerInterval){ clearInterval(session.timerInterval); session.timerInterval=null; }
+  return true;
+}
+
+// 階クリア判定（finishSessionから呼ぶ）
+function dungeonFloorResult(correct, total){
+  const d = session.dungeon;
+  const r = ensureDaily();
+  r.dailySets++;
+  const tier = BOSS_TIERS[Math.min(d.floor-1, BOSS_TIERS.length-1)];
+  const need = Math.max(1, Math.ceil(total * tier.ratio));
+  const perfect = total>0 && correct===total;
+  const cleared = correct >= need;
+  let floorExp = 0, boosted = false;
+  if(cleared){
+    floorExp = Math.round(tier.exp * (1 + (d.floor-1)*0.15)) + (perfect ? Math.round(tier.exp*0.5) : 0);
+    if(r.activeBoost && floorExp>0){ floorExp *= 2; r.activeBoost=false; boosted=true; }
+    d.runExp += floorExp;
+    r.dailyDefeats++;
+    if(perfect) r.dailyPerfect++;
+  } else {
+    r.bonusExp += d.runExp; // 敗北：これまでの持ち帰り分を確定
+  }
+  claimQuests();
+  saveStorage();
+  renderDungeon({ cleared, tier, need, correct, total, perfect, floorExp, boosted, floor:d.floor, runExp:d.runExp });
+  showScreen('dungeon');
+}
+
+function renderDungeon(x){
+  const el = document.getElementById('dungeon-body');
+  if(x.cleared){
+    const nextTier = BOSS_TIERS[Math.min(x.floor, BOSS_TIERS.length-1)];
+    el.innerHTML = `
+      <div style="font-size:2.8rem;line-height:1;">${x.tier.mob}</div>
+      <div style="font-weight:700;font-size:1.15rem;margin-top:6px;color:${x.tier.color};">⚔️ 地下${x.floor}階 ${x.tier.name}を撃破！</div>
+      <div style="font-size:.85rem;color:var(--muted);margin-top:4px;">${x.correct}/${x.total} 正解　${x.perfect?'★ノーミス':''}</div>
+      <div style="margin:14px auto;max-width:280px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:12px;">
+        <div style="font-size:.82rem;color:#166534;">獲得EXP +${x.floorExp}${x.boosted?'（☕2倍）':''}</div>
+        <div style="font-size:1.4rem;font-weight:800;color:#16a34a;margin-top:2px;">持ち帰りEXP ${x.runExp}</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-top:2px;">撤退すると +20%ボーナスで確定</div>
+      </div>
+      <div style="font-size:.8rem;color:var(--muted);margin-bottom:12px;">次は 地下${x.floor+1}階「${nextTier.name}」。深いほど高報酬だが、討ち漏らすと持ち帰り分が確定されず終了…</div>
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
+        <button class="next-btn" style="width:auto;padding:11px 22px;" onclick="dungeonNext()">⬇️ 次の階へ進む</button>
+        <button class="next-btn" style="width:auto;padding:11px 22px;background:#16a34a;" onclick="dungeonRetreat()">💰 撤退して持ち帰る</button>
+      </div>`;
+  } else {
+    el.innerHTML = `
+      <div style="font-size:2.8rem;line-height:1;filter:grayscale(1);">${x.tier.mob}</div>
+      <div style="font-weight:700;font-size:1.15rem;margin-top:6px;color:var(--danger);">💀 地下${x.floor}階で力尽きた…</div>
+      <div style="font-size:.85rem;color:var(--muted);margin-top:4px;">${x.correct}/${x.total} 正解（撃破に必要：${x.need}問）</div>
+      <div style="margin:14px auto;max-width:280px;background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:12px;">
+        <div style="font-size:.8rem;color:var(--muted);">持ち帰ったEXP</div>
+        <div style="font-size:1.4rem;font-weight:800;color:var(--text);">${x.runExp}</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-top:2px;">撤退ボーナスはなし。次はもっと深くへ</div>
+      </div>
+      <button class="next-btn" style="width:auto;padding:11px 26px;" onclick="dungeonGoHome()">ホームへ</button>`;
+  }
+}
+
+function dungeonNext(){
+  session.dungeon.floor++;
+  if(buildDungeonFloor()){ showScreen('quiz'); renderQuestion(); }
+}
+function dungeonRetreat(){
+  const d = session.dungeon;
+  const r = rpg();
+  const bonus = Math.round(d.runExp * 0.2);
+  r.bonusExp += d.runExp + bonus;
+  saveStorage();
+  const el = document.getElementById('dungeon-body');
+  el.innerHTML = `
+    <div style="font-size:2.6rem;">🏆</div>
+    <div style="font-weight:700;font-size:1.15rem;margin-top:6px;color:#16a34a;">地下${d.floor}階まで踏破して生還！</div>
+    <div style="margin:14px auto;max-width:280px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:12px;">
+      <div style="font-size:.8rem;color:#166534;">持ち帰りEXP ${d.runExp} ＋ 撤退ボーナス ${bonus}</div>
+      <div style="font-size:1.5rem;font-weight:800;color:#16a34a;margin-top:2px;">合計 +${d.runExp + bonus} EXP</div>
+    </div>
+    <button class="next-btn" style="width:auto;padding:11px 26px;" onclick="dungeonGoHome()">ホームへ</button>`;
+}
+function dungeonGoHome(){
+  session.dungeon = null;
+  showScreen('home'); renderHome();
+}
+function dungeonClearAll(){
+  const d = session.dungeon;
+  const r = rpg();
+  const bonus = Math.round(d.runExp * 0.2);
+  r.bonusExp += d.runExp + bonus;
+  saveStorage();
+  const el = document.getElementById('dungeon-body');
+  el.innerHTML = `
+    <div style="font-size:2.8rem;">👑</div>
+    <div style="font-weight:700;font-size:1.15rem;margin-top:6px;color:#7c3aed;">ダンジョン完全踏破！挑める問題を全て制覇</div>
+    <div style="margin:14px auto;max-width:280px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:10px;padding:12px;">
+      <div style="font-size:1.5rem;font-weight:800;color:#7c3aed;">+${d.runExp + bonus} EXP</div>
+    </div>
+    <button class="next-btn" style="width:auto;padding:11px 26px;" onclick="dungeonGoHome()">ホームへ</button>`;
+  showScreen('dungeon');
+}
+
+// ============================================================
 // Quiz
 // ============================================================
 function startMode(mode){
@@ -1161,6 +1330,9 @@ function finishSession(){
 
   history.push({ date: new Date().toISOString(), correct, total, wrongs, cat: catMap });
   saveStorage();
+
+  // ダンジョンモードは専用フロー
+  if(session.mode === 'dungeon'){ dungeonFloorResult(correct, total); return; }
 
   // ボス戦判定＋クエスト回収
   const battle = processBossBattle(correct, total);
