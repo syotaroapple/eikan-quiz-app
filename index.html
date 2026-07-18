@@ -154,6 +154,7 @@
 <!-- HOME -->
 <div class="screen active" id="screen-home">
   <div id="countdown-card" style="display:none;"></div>
+  <div id="rpg-card"></div>
   <div class="stats-row" id="home-stats"></div>
   <div class="q-status-grid" id="q-status-grid"></div>
   <div class="cat-home-section">
@@ -431,7 +432,7 @@ function renderCountdown(){
   const readiness = overallReadiness();
   // 逆算ペース: 設定時点の準備度から100%まで線形。今日あるべきライン
   if(!settings.examStart || settings.examStart.examDate !== settings.examDate){
-    settings.examStart = { date: today.toISOString().slice(0,10), readiness, examDate: settings.examDate };
+    settings.examStart = { date: localDateStr(today), readiness, examDate: settings.examDate };
     saveStorage();
   }
   const start = settings.examStart;
@@ -477,8 +478,147 @@ function renderCountdown(){
   </div>`;
 }
 
+// ============================================================
+// RPG（ゲーミフィケーション層）
+// ============================================================
+const CAT_BOSS = {
+  '労働生理':          { icon:'🧠', name:'労働生理' },
+  '関係法令（有害）':  { icon:'⚖️', name:'関係法令（有害）' },
+  '労働衛生（有害）':  { icon:'☣️', name:'労働衛生（有害）' },
+  '関係法令（その他）':{ icon:'📋', name:'関係法令（その他）' },
+  '労働衛生（その他）':{ icon:'🏥', name:'労働衛生（その他）' },
+};
+// 1問あたりの撃破度(0..1)。B案: 1回正解でHP半分、2連で3/4、3連で撃破
+function defeatProgress(id){
+  const s = qStats[id];
+  if(!s) return 0;
+  if(s.streak >= 3) return 1;
+  if(s.streak === 2) return 0.75;
+  if(s.streak === 1) return 0.5;
+  return 0; // 未挑戦 or 直近誤答
+}
+// 総経験値（qStatsから導出：正解×10 + 誤答×3 + 撃破ボーナス30）
+function totalExp(){
+  let exp = 0;
+  Object.values(qStats).forEach(s=>{
+    exp += (s.c||0)*10 + (s.w||0)*3 + (s.streak>=3 ? 30 : 0);
+  });
+  return exp;
+}
+const LV_TITLES = ['駆け出し','衛生見習い','衛生管理補佐','現場のホープ','衛生管理者代理','頼れる衛生係','衛生管理マスター','衛生管理の達人'];
+// レベル関連: 必要EXPは level*300 の累積
+function expForLevel(lv){ return 150*lv*(lv-1); } // Lv1で0, Lv2で300, Lv3で900...
+function levelInfo(){
+  const exp = totalExp();
+  let lv = 1;
+  while(expForLevel(lv+1) <= exp) lv++;
+  const cur = exp - expForLevel(lv);
+  const need = expForLevel(lv+1) - expForLevel(lv);
+  const title = LV_TITLES[Math.min(lv-1, LV_TITLES.length-1)];
+  return { lv, cur, need, title, exp };
+}
+
+// ローカル日付をYYYY-MM-DDで返す（toISOはUTC変換で日付ズレするため使わない）
+function localDateStr(d){
+  const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), da=String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${da}`;
+}
+// 連続学習日数・今日の問題数を更新（解答時に呼ぶ）
+function recordStudyActivity(){
+  const today = new Date();
+  const tStr = localDateStr(today);
+  if(!settings.rpg) settings.rpg = { studyStreak:0, lastStudyDate:null, dailyDate:null, dailyCount:0 };
+  const r = settings.rpg;
+  if(r.dailyDate !== tStr){ r.dailyDate = tStr; r.dailyCount = 0; }
+  r.dailyCount++;
+  if(r.lastStudyDate !== tStr){
+    const y = new Date(today); y.setDate(y.getDate()-1);
+    const yStr = localDateStr(y);
+    r.studyStreak = (r.lastStudyDate === yStr) ? (r.studyStreak||0)+1 : 1;
+    r.lastStudyDate = tStr;
+  }
+  saveStorage();
+}
+// ストリーク表示用（今日/昨日でなければ0扱い）
+function currentStudyStreak(){
+  const r = settings.rpg; if(!r || !r.lastStudyDate) return 0;
+  const today = new Date();
+  const tStr = localDateStr(today);
+  const y = new Date(today); y.setDate(y.getDate()-1);
+  const yStr = localDateStr(y);
+  return (r.lastStudyDate===tStr || r.lastStudyDate===yStr) ? (r.studyStreak||0) : 0;
+}
+
+const DAILY_GOAL = 20;
+function renderRPG(){
+  const el = document.getElementById('rpg-card');
+  const info = levelInfo();
+  const expPct = info.need ? Math.round(info.cur/info.need*100) : 100;
+  const streak = currentStudyStreak();
+  const dailyCount = (settings.rpg && settings.rpg.dailyDate === localDateStr(new Date())) ? settings.rpg.dailyCount : 0;
+
+  // カテゴリ別ボスHP
+  const cats = [...new Set(allQuestions.map(q=>q.cat))];
+  const bosses = cats.map(c=>{
+    const qs = allQuestions.filter(q=>q.cat===c);
+    const maxHp = qs.length;
+    const dmg = qs.reduce((s,q)=>s+defeatProgress(q.id), 0);
+    const hp = Math.max(0, Math.round(maxHp - dmg));
+    const defeatedCount = qs.filter(q=>defeatProgress(q.id)>=1).length;
+    let state, sc;
+    if(hp<=0){ state='討伐完了'; sc='#16a34a'; }
+    else if(dmg<=0){ state='未討伐'; sc='#dc2626'; }
+    else { state='交戦中'; sc='#ea580c'; }
+    return { c, maxHp, hp, dmg, defeatedCount, state, sc, meta: CAT_BOSS[c]||{icon:'❓',name:c} };
+  });
+  const undefeated = bosses.filter(b=>b.dmg<=0).length;
+
+  // デイリークエスト
+  const qDaily = dailyCount>=DAILY_GOAL;
+  const qBoss = undefeated===0 || bosses.some(b=>b.dmg>0 && b.hp>0); // 未討伐に着手 or 全て着手済み
+
+  const bossRows = bosses.map(b=>{
+    const hpPct = Math.round(b.hp/b.maxHp*100);
+    const barColor = b.state==='討伐完了' ? '#16a34a' : (b.state==='未討伐' ? '#94a3b8' : '#dc2626');
+    const badge = b.state==='未討伐' ? `<span style="color:#dc2626;font-size:.7rem;margin-left:4px;">未討伐</span>`
+                : b.state==='討伐完了' ? `<span style="color:#16a34a;font-size:.7rem;margin-left:4px;">✔討伐</span>` : '';
+    return `<div style="background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:9px 11px;">
+      <div style="display:flex;justify-content:space-between;font-size:.82rem;margin-bottom:5px;">
+        <span style="font-weight:600;">${b.meta.icon} ${b.meta.name}${badge}</span>
+        <span style="color:var(--muted);">HP ${b.hp} / ${b.maxHp}</span>
+      </div>
+      <div style="background:#e2e8f0;border-radius:99px;height:7px;overflow:hidden;">
+        <div style="width:${hpPct}%;height:100%;background:${barColor};border-radius:99px;"></div>
+      </div>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:3px;">${b.state}${b.defeatedCount>0?` — ${b.defeatedCount}問撃破`:''}</div>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+  <div class="card" style="padding:14px;">
+    <div style="background:var(--primary);color:#fff;border-radius:10px;padding:11px 13px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-weight:700;font-size:.98rem;">⚔️ Lv.${info.lv} ${info.title}</span>
+        <span style="font-size:.82rem;">🔥 ${streak}日連続</span>
+      </div>
+      <div style="margin-top:7px;background:rgba(255,255,255,.25);border-radius:99px;height:8px;overflow:hidden;">
+        <div style="width:${expPct}%;height:100%;background:#fff;border-radius:99px;"></div>
+      </div>
+      <div style="font-size:.68rem;margin-top:4px;opacity:.9;">EXP ${info.cur} / ${info.need}　次のレベルまで${info.need-info.cur}</div>
+    </div>
+    <div style="margin-top:11px;display:flex;flex-direction:column;gap:6px;">
+      <div style="background:${qDaily?'#dcfce7':'#fef9c3'};border-radius:8px;padding:7px 11px;font-size:.78rem;color:${qDaily?'#166534':'#854d0e'};">
+        ${qDaily?'✅':'🎯'} 今日のクエスト：${DAILY_GOAL}問解く（${Math.min(dailyCount,DAILY_GOAL)}/${DAILY_GOAL}）
+      </div>
+    </div>
+    <div style="font-size:.75rem;color:var(--muted);margin:12px 0 7px;">👾 ダンジョンのボス（HP＝残り問題数・未討伐${undefeated}体）</div>
+    <div style="display:flex;flex-direction:column;gap:7px;">${bossRows}</div>
+  </div>`;
+}
+
 function renderHome(){
   renderCountdown();
+  renderRPG();
   const total = history.reduce((s,h)=>s+h.total,0);
   const flagCount = Object.values(flags).filter(Boolean).length;
   const sessions = history.length;
@@ -735,6 +875,7 @@ function selectAnswer(idx){
   // 解答ログに記録（直近100問の正答率算出用）
   answerLog.push({ cat: q.cat, correct: isCorrect });
   if(answerLog.length > ANSWER_LOG_MAX) answerLog = answerLog.slice(-ANSWER_LOG_MAX);
+  recordStudyActivity(); // RPG: 連続学習日数・今日の問題数を更新
   // 問題ごとの統計を更新
   if(!qStats[q.id]) qStats[q.id] = {c:0, w:0, streak:0};
   if(isCorrect){
