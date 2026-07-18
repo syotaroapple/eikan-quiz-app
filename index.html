@@ -227,6 +227,7 @@
 
 <!-- RESULT -->
 <div class="screen" id="screen-result">
+  <div id="res-boss"></div>
   <div class="card result-score">
     <div class="big" id="res-score"></div>
     <div class="label" id="res-label"></div>
@@ -497,13 +498,29 @@ function defeatProgress(id){
   if(s.streak === 1) return 0.5;
   return 0; // 未挑戦 or 直近誤答
 }
-// 総経験値（qStatsから導出：正解×10 + 誤答×3 + 撃破ボーナス30）
+// RPG状態を初期化して返す
+function rpg(){
+  if(!settings.rpg) settings.rpg = {};
+  const r = settings.rpg;
+  r.studyStreak ??= 0; r.lastStudyDate ??= null;
+  r.dailyDate ??= null; r.dailyCount ??= 0; r.dailyCorrect ??= 0;
+  r.dailySets ??= 0; r.dailyDefeats ??= 0; r.dailyPerfect ??= 0;
+  r.bonusExp ??= 0;
+  r.items ??= { boost:0, shield:0 };
+  r.runIndex ??= 0; r.runDate ??= null;
+  r.studyDays ??= [];
+  r.dailyClaimed ??= {};
+  r.activeBoost ??= false;
+  r.quests ??= null;
+  return r;
+}
+// 総経験値（qStatsから導出：正解×10 + 誤答×3 + 撃破ボーナス30）＋ボス/クエストの獲得EXP
 function totalExp(){
   let exp = 0;
   Object.values(qStats).forEach(s=>{
     exp += (s.c||0)*10 + (s.w||0)*3 + (s.streak>=3 ? 30 : 0);
   });
-  return exp;
+  return exp + (rpg().bonusExp||0);
 }
 const LV_TITLES = ['駆け出し','衛生見習い','衛生管理補佐','現場のホープ','衛生管理者代理','頼れる衛生係','衛生管理マスター','衛生管理の達人'];
 // レベル関連: 必要EXPは level*300 の累積
@@ -523,19 +540,42 @@ function localDateStr(d){
   const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), da=String(d.getDate()).padStart(2,'0');
   return `${y}-${m}-${da}`;
 }
-// 連続学習日数・今日の問題数を更新（解答時に呼ぶ）
-function recordStudyActivity(){
+// 日付が変わったら今日のカウンタ・クエストをリセット
+function ensureDaily(){
+  const r = rpg();
+  const t = localDateStr(new Date());
+  if(r.dailyDate !== t){
+    r.dailyDate = t;
+    r.dailyCount = r.dailyCorrect = r.dailySets = r.dailyDefeats = r.dailyPerfect = 0;
+    r.dailyClaimed = {};
+    r.quests = pickDailyQuests(t);
+  }
+  if(!r.quests) r.quests = pickDailyQuests(t);
+  return r;
+}
+// 連続学習日数・今日の問題数を更新（解答ごとに呼ぶ）
+function recordStudyActivity(isCorrect){
   const today = new Date();
   const tStr = localDateStr(today);
-  if(!settings.rpg) settings.rpg = { studyStreak:0, lastStudyDate:null, dailyDate:null, dailyCount:0 };
-  const r = settings.rpg;
-  if(r.dailyDate !== tStr){ r.dailyDate = tStr; r.dailyCount = 0; }
+  const r = ensureDaily();
   r.dailyCount++;
+  if(isCorrect) r.dailyCorrect++;
   if(r.lastStudyDate !== tStr){
     const y = new Date(today); y.setDate(y.getDate()-1);
     const yStr = localDateStr(y);
-    r.studyStreak = (r.lastStudyDate === yStr) ? (r.studyStreak||0)+1 : 1;
+    const y2 = new Date(today); y2.setDate(y2.getDate()-2);
+    const y2Str = localDateStr(y2);
+    if(r.lastStudyDate === yStr){
+      r.studyStreak = (r.studyStreak||0)+1;
+    } else if(r.lastStudyDate === y2Str && (r.items.shield||0) > 0){
+      r.items.shield--;             // お守り札で1日の穴を埋める
+      r.studyStreak = (r.studyStreak||0)+1;
+    } else {
+      r.studyStreak = 1;
+    }
     r.lastStudyDate = tStr;
+    if(!r.studyDays.includes(tStr)) r.studyDays.push(tStr);
+    if(r.studyDays.length > 90) r.studyDays = r.studyDays.slice(-90);
   }
   saveStorage();
 }
@@ -549,15 +589,152 @@ function currentStudyStreak(){
   return (r.lastStudyDate===tStr || r.lastStudyDate===yStr) ? (r.studyStreak||0) : 0;
 }
 
-const DAILY_GOAL = 20;
+// ===== セット制ボス戦 =====
+const BOSS_TIERS = [
+  { name:'小ボス', mob:'👺', ratio:0.5, exp:30,  color:'#16a34a' },
+  { name:'中ボス', mob:'👹', ratio:0.7, exp:60,  color:'#ea580c' },
+  { name:'大ボス', mob:'🐲', ratio:0.9, exp:120, color:'#dc2626' },
+  { name:'超ボス', mob:'😈', ratio:0.9, exp:200, color:'#7c3aed' },
+];
+// セット終了時に呼ぶ。結果を返す
+function processBossBattle(correct, total){
+  const r = ensureDaily();
+  const t = localDateStr(new Date());
+  if(r.runDate !== t){ r.runIndex = 0; r.runDate = t; } // 毎日は小ボスから
+  const tier = BOSS_TIERS[Math.min(r.runIndex, BOSS_TIERS.length-1)];
+  const need = Math.max(1, Math.ceil(total * tier.ratio));
+  const perfect = total>0 && correct===total;
+  const defeated = correct >= need;
+  r.dailySets++;
+  let exp = 0, boosted = false;
+  if(defeated){
+    exp = tier.exp + (perfect ? Math.round(tier.exp*0.5) : 0);
+    if(r.activeBoost && exp>0){ exp *= 2; r.activeBoost = false; boosted = true; }
+    r.bonusExp += exp;
+    r.dailyDefeats++;
+    if(perfect) r.dailyPerfect++;
+    r.runIndex = Math.min(r.runIndex+1, BOSS_TIERS.length-1);
+  } else {
+    r.runIndex = 0; // 討ち漏らしでリセット
+  }
+  const nextTier = BOSS_TIERS[Math.min(r.runIndex, BOSS_TIERS.length-1)];
+  saveStorage();
+  return { tier, need, correct, total, perfect, defeated, exp, boosted, nextTier };
+}
+
+// ===== デイリークエスト =====
+const QUEST_POOL = [
+  { id:'solve20',  label:'問題を20問解く',      target:20, metric:r=>r.dailyCount },
+  { id:'solve30',  label:'問題を30問解く',      target:30, metric:r=>r.dailyCount },
+  { id:'correct15',label:'15問正解する',        target:15, metric:r=>r.dailyCorrect },
+  { id:'sets2',    label:'2セット完了する',      target:2,  metric:r=>r.dailySets },
+  { id:'boss1',    label:'ボスを1体撃破する',    target:1,  metric:r=>r.dailyDefeats },
+  { id:'boss2',    label:'ボスを2体撃破する',    target:2,  metric:r=>r.dailyDefeats },
+  { id:'perfect1', label:'ノーミスセットを1回',  target:1,  metric:r=>r.dailyPerfect },
+];
+function pickDailyQuests(dateStr){
+  let seed = 0; for(const ch of dateStr) seed = (seed*31 + ch.charCodeAt(0))>>>0;
+  const idx = QUEST_POOL.map((_,i)=>i);
+  for(let i=idx.length-1;i>0;i--){ seed=(seed*1103515245+12345)>>>0; const j=seed%(i+1); [idx[i],idx[j]]=[idx[j],idx[i]]; }
+  return idx.slice(0,3).map(i=>QUEST_POOL[i].id);
+}
+// 達成済みクエストの報酬を回収。回収した数を返す
+function claimQuests(){
+  const r = ensureDaily();
+  let claimed = 0;
+  r.quests.forEach((qid,i)=>{
+    const q = QUEST_POOL.find(x=>x.id===qid); if(!q) return;
+    if(r.dailyClaimed[qid]) return;
+    if(q.metric(r) >= q.target){
+      r.dailyClaimed[qid] = true;
+      // 偶数枠→☕EXP2倍、奇数枠→🧧ストリーク保護
+      if(i % 2 === 0) r.items.boost++; else r.items.shield++;
+      claimed++;
+    }
+  });
+  // 3つ全部達成でボーナス（両方+1）
+  if(r.quests.every(qid=>r.dailyClaimed[qid]) && !r.dailyClaimed._comp){
+    r.dailyClaimed._comp = true;
+    r.items.boost++; r.items.shield++;
+    claimed++;
+  }
+  if(claimed) saveStorage();
+  return claimed;
+}
+function useBoost(){
+  const r = rpg();
+  if(r.activeBoost){ return; }
+  if((r.items.boost||0) <= 0){ return; }
+  r.items.boost--; r.activeBoost = true;
+  saveStorage();
+  renderRPG();
+}
+
+// セット結果画面のボス戦表示
+function renderBossResult(b){
+  const el = document.getElementById('res-boss');
+  if(!el) return;
+  const hpLeft = Math.max(0, b.total - b.correct);
+  const hpPct = Math.round(hpLeft/b.total*100);
+  const headline = b.defeated
+    ? (b.perfect ? 'パーフェクト撃破！' : `${b.tier.name}を撃破！`)
+    : `${b.tier.name}に討ち漏らし…`;
+  const sub = b.defeated
+    ? `EXP +${b.exp}${b.boosted?'（☕2倍）':''}${b.perfect?'　★ノーミスボーナス':''}　次は${b.nextTier.name}`
+    : `あと${b.need - b.correct}問で撃破だった（${b.correct}/${b.total}・必要${b.need}）。次は${b.tier.name}から`;
+  el.innerHTML = `
+  <div class="card" style="text-align:center;padding:16px;border:2px solid ${b.defeated?b.tier.color:'#94a3b8'};">
+    <div style="font-size:2.6rem;line-height:1;">${b.tier.mob}</div>
+    <div style="font-weight:700;font-size:1.1rem;margin-top:6px;color:${b.defeated?b.tier.color:'var(--muted)'};">${b.defeated?'⚔️ ':''}${headline}</div>
+    <div style="margin:10px auto;max-width:260px;">
+      <div style="background:#e2e8f0;border-radius:99px;height:10px;overflow:hidden;">
+        <div style="width:${hpPct}%;height:100%;background:${b.defeated?'#16a34a':'#dc2626'};border-radius:99px;transition:width .5s;"></div>
+      </div>
+      <div style="font-size:.72rem;color:var(--muted);margin-top:3px;">与ダメージ ${b.correct} / HP ${b.total}</div>
+    </div>
+    <div style="font-size:.82rem;color:${b.defeated?'#166534':'var(--muted)'};">${sub}</div>
+  </div>`;
+}
+
 function renderRPG(){
   const el = document.getElementById('rpg-card');
+  const r = ensureDaily();
+  claimQuests(); // 達成済みクエストを回収
   const info = levelInfo();
   const expPct = info.need ? Math.round(info.cur/info.need*100) : 100;
   const streak = currentStudyStreak();
-  const dailyCount = (settings.rpg && settings.rpg.dailyDate === localDateStr(new Date())) ? settings.rpg.dailyCount : 0;
 
-  // カテゴリ別ボスHP
+  // --- デイリークエスト ---
+  const questRows = r.quests.map(qid=>{
+    const q = QUEST_POOL.find(x=>x.id===qid); if(!q) return '';
+    const prog = Math.min(q.metric(r), q.target);
+    const done = r.dailyClaimed[qid];
+    return `<div style="display:flex;justify-content:space-between;align-items:center;background:${done?'#dcfce7':'#f8fafc'};border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:.78rem;">
+      <span style="color:${done?'#166534':'var(--text)'};">${done?'✅':'🎯'} ${q.label}</span>
+      <span style="color:var(--muted);font-size:.72rem;">${prog}/${q.target}</span>
+    </div>`;
+  }).join('');
+  const compDone = r.quests.every(qid=>r.dailyClaimed[qid]);
+
+  // --- ストリークカレンダー（当月） ---
+  const now = new Date();
+  const yr = now.getFullYear(), mo = now.getMonth();
+  const daysInMonth = new Date(yr, mo+1, 0).getDate();
+  const firstDow = new Date(yr, mo, 1).getDay();
+  const todayStr = localDateStr(now);
+  const studySet = new Set(r.studyDays);
+  let cells = '';
+  for(let i=0;i<firstDow;i++) cells += `<div></div>`;
+  for(let d=1; d<=daysInMonth; d++){
+    const ds = `${yr}-${String(mo+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const studied = studySet.has(ds);
+    const isToday = ds===todayStr;
+    cells += `<div style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;font-size:.68rem;border-radius:6px;
+      background:${studied?'#fed7aa':'#f1f5f9'};color:${studied?'#9a3412':'var(--muted)'};
+      ${isToday?'outline:2px solid var(--primary);outline-offset:-2px;':''}">${studied?'🔥':d}</div>`;
+  }
+
+  // --- カテゴリ別ボスHP ---
   const cats = [...new Set(allQuestions.map(q=>q.cat))];
   const bosses = cats.map(c=>{
     const qs = allQuestions.filter(q=>q.cat===c);
@@ -565,18 +742,10 @@ function renderRPG(){
     const dmg = qs.reduce((s,q)=>s+defeatProgress(q.id), 0);
     const hp = Math.max(0, Math.round(maxHp - dmg));
     const defeatedCount = qs.filter(q=>defeatProgress(q.id)>=1).length;
-    let state, sc;
-    if(hp<=0){ state='討伐完了'; sc='#16a34a'; }
-    else if(dmg<=0){ state='未討伐'; sc='#dc2626'; }
-    else { state='交戦中'; sc='#ea580c'; }
-    return { c, maxHp, hp, dmg, defeatedCount, state, sc, meta: CAT_BOSS[c]||{icon:'❓',name:c} };
+    let state; if(hp<=0) state='討伐完了'; else if(dmg<=0) state='未討伐'; else state='交戦中';
+    return { c, maxHp, hp, dmg, defeatedCount, state, meta: CAT_BOSS[c]||{icon:'❓',name:c} };
   });
   const undefeated = bosses.filter(b=>b.dmg<=0).length;
-
-  // デイリークエスト
-  const qDaily = dailyCount>=DAILY_GOAL;
-  const qBoss = undefeated===0 || bosses.some(b=>b.dmg>0 && b.hp>0); // 未討伐に着手 or 全て着手済み
-
   const bossRows = bosses.map(b=>{
     const hpPct = Math.round(b.hp/b.maxHp*100);
     const barColor = b.state==='討伐完了' ? '#16a34a' : (b.state==='未討伐' ? '#94a3b8' : '#dc2626');
@@ -594,6 +763,12 @@ function renderRPG(){
     </div>`;
   }).join('');
 
+  // --- アイテム ---
+  const boost = r.items.boost||0, shield = r.items.shield||0;
+  const boostBtn = r.activeBoost
+    ? `<span style="font-size:.72rem;color:#16a34a;font-weight:600;">次セットEXP2倍 発動中</span>`
+    : (boost>0 ? `<button onclick="useBoost()" style="font-size:.72rem;padding:3px 10px;border-radius:14px;border:1px solid var(--primary);background:#fff;color:var(--primary);cursor:pointer;">使う</button>` : '');
+
   el.innerHTML = `
   <div class="card" style="padding:14px;">
     <div style="background:var(--primary);color:#fff;border-radius:10px;padding:11px 13px;">
@@ -606,11 +781,21 @@ function renderRPG(){
       </div>
       <div style="font-size:.68rem;margin-top:4px;opacity:.9;">EXP ${info.cur} / ${info.need}　次のレベルまで${info.need-info.cur}</div>
     </div>
-    <div style="margin-top:11px;display:flex;flex-direction:column;gap:6px;">
-      <div style="background:${qDaily?'#dcfce7':'#fef9c3'};border-radius:8px;padding:7px 11px;font-size:.78rem;color:${qDaily?'#166534':'#854d0e'};">
-        ${qDaily?'✅':'🎯'} 今日のクエスト：${DAILY_GOAL}問解く（${Math.min(dailyCount,DAILY_GOAL)}/${DAILY_GOAL}）
-      </div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:11px;background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:7px 11px;">
+      <span style="font-size:.78rem;">🎒 ☕×${boost}　🧧×${shield}</span>
+      ${boostBtn}
     </div>
+
+    <div style="font-size:.75rem;color:var(--muted);margin:12px 0 7px;">🎯 今日のクエスト ${compDone?'<span style="color:#16a34a;">コンプ！</span>':''}</div>
+    <div style="display:flex;flex-direction:column;gap:6px;">${questRows}</div>
+
+    <div style="font-size:.75rem;color:var(--muted);margin:12px 0 7px;">🔥 ${mo+1}月の学習カレンダー（${r.studyDays.filter(d=>d.startsWith(`${yr}-${String(mo+1).padStart(2,'0')}`)).length}日）</div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px;">
+      ${['日','月','火','水','木','金','土'].map(w=>`<div style="text-align:center;font-size:.6rem;color:var(--muted);">${w}</div>`).join('')}
+      ${cells}
+    </div>
+
     <div style="font-size:.75rem;color:var(--muted);margin:12px 0 7px;">👾 ダンジョンのボス（HP＝残り問題数・未討伐${undefeated}体）</div>
     <div style="display:flex;flex-direction:column;gap:7px;">${bossRows}</div>
   </div>`;
@@ -875,7 +1060,7 @@ function selectAnswer(idx){
   // 解答ログに記録（直近100問の正答率算出用）
   answerLog.push({ cat: q.cat, correct: isCorrect });
   if(answerLog.length > ANSWER_LOG_MAX) answerLog = answerLog.slice(-ANSWER_LOG_MAX);
-  recordStudyActivity(); // RPG: 連続学習日数・今日の問題数を更新
+  recordStudyActivity(isCorrect); // RPG: 連続学習日数・今日の問題数を更新
   // 問題ごとの統計を更新
   if(!qStats[q.id]) qStats[q.id] = {c:0, w:0, streak:0};
   if(isCorrect){
@@ -976,6 +1161,11 @@ function finishSession(){
 
   history.push({ date: new Date().toISOString(), correct, total, wrongs, cat: catMap });
   saveStorage();
+
+  // ボス戦判定＋クエスト回収
+  const battle = processBossBattle(correct, total);
+  claimQuests();
+  renderBossResult(battle);
 
   // Result screen
   const pct = total ? Math.round(correct/total*100) : 0;
